@@ -1,0 +1,104 @@
+MixinTale Proprietary License
+Copyright (c) 2026 Traktool
+
+All rights reserved.
+
+This software, known as "MixinTale", including but not limited to its
+source code, compiled binaries, assets, documentation, and any derivative
+or associated works (hereafter referred to as "the Software"), is the
+exclusive intellectual property of the author.
+
+--------------------------------------------------
+GRANT OF RIGHTS
+--------------------------------------------------
+
+NO RIGHTS ARE GRANTED by this license.
+
+The Software is NOT open-source.
+
+Permission is NOT granted to:
+- Use
+- Copy
+- Modify
+- Merge
+- Fork
+- Publish
+- Distribute
+- Sublicense
+- Sell
+- Rent
+- Lease
+- Upload
+- Share
+- Reverse engineer
+- Decompile
+- Disassemble
+- Create derivative works from
+
+the Software, in whole or in part, in any form, for any purpose, whether
+commercial or non-commercial, without explicit prior written permission
+from the copyright holder.
+
+--------------------------------------------------
+AUTHORIZED USE
+--------------------------------------------------
+
+The Software may ONLY be:
+- Executed in binary form
+- Used privately
+- Used internally
+
+AND ONLY when explicitly authorized in writing by the copyright holder.
+
+Any authorization not granted in writing is considered invalid.
+
+--------------------------------------------------
+PROHIBITED ACTIONS
+--------------------------------------------------
+
+The following actions are STRICTLY PROHIBITED:
+- Forking this repository or any part of it
+- Re-uploading the Software or its components
+- Redistributing modified or unmodified versions
+- Using the Software as a dependency, base, or reference for another project
+- Incorporating parts of the Software into other software
+- Circumventing technical, legal, or contractual restrictions
+- Claiming authorship or partial authorship
+- Using the Software for training AI models
+
+--------------------------------------------------
+NO WARRANTY
+--------------------------------------------------
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT.
+
+IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY CLAIM, DAMAGES,
+OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE,
+ARISING FROM, OUT OF, OR IN CONNECTION WITH THE SOFTWARE OR THE USE
+OR OTHER DEALINGS IN THE SOFTWARE.
+
+--------------------------------------------------
+ENFORCEMENT
+--------------------------------------------------
+
+Any unauthorized use, reproduction, distribution, or modification of the
+Software constitutes a violation of copyright law and may result in
+civil and/or criminal liability under applicable laws.
+
+The author reserves the right to pursue legal action without prior notice.
+
+--------------------------------------------------
+GOVERNING LAW
+--------------------------------------------------
+
+This license shall be governed by and construed in accordance with the
+laws of France and applicable international intellectual property treaties.
+
+--------------------------------------------------
+CONTACT
+--------------------------------------------------
+
+For licensing inquiries or written authorization requests, contact:
+Traktool
