@@ -87,18 +87,28 @@ MixinTale is a **method‑patching framework** for Hytale that prioritizes:
 
 ## 3) Installation (Server owners)
 
-**One file. One folder. No arguments.**
+⚠️ **Important – Early plugin**
 
-1. Put the runtime jar here:
+MixinTale is an **early bootstrap framework** and **must NOT be installed like a regular mod**.
+
+### Installation steps
+
+1. Place the runtime jar here:
    ```
    /earlyplugins/MixinTale‑Bootstrap‑X.Y.Z.jar
    ```
 
-2. Put mods here:
+2. Put your mods here:
    ```
    /mods/*.jar
    ```
 
+3. When running a server, you **MUST** add the following launch argument:
+   --accept-early-plugins
+
+Without this argument, early plugins will be ignored by Hytale and MixinTale will not load.
+
+❌ Do NOT place MixinTale in the `mods` folder.
 That’s it.
 
 ---
