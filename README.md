@@ -67,7 +67,7 @@ MixinTale is a **method‑patching framework** for Hytale that prioritizes:
 - Scans `/mods` for patch indexes
 - Applies patches using an **ASM weaver**
 
-📁 Install: `/earlyplugins/MixinTale‑Runtime‑X.Y.Z.jar`
+📁 Install: `/earlyplugins/MixinTale‑Bootstrap‑X.Y.Z.jar`
 
 ### ✅ MixinTale‑API (Dev‑time only)
 - Annotation API used by mods: `@Patch`, `@Prefix`, `@Postfix`, `@Replace`, …
