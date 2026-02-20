@@ -10,7 +10,6 @@ import java.util.Map;
 import java.util.stream.Collectors;
 
 public final class MixinTaleCore {
-    private final ResourceLocator resourceLocator;
     private final boolean failHard;
     private final MixinTaleIndex index;
     private final BytecodeClassInfoResolver resolver;
@@ -18,7 +17,6 @@ public final class MixinTaleCore {
     private final MixinTaleApplyReport report = new MixinTaleApplyReport();
 
     public MixinTaleCore(ResourceLocator resourceLocator, boolean failHard) {
-        this.resourceLocator = resourceLocator;
         this.failHard = failHard;
         this.index = MixinTaleIndex.load(resourceLocator);
         this.resolver = new BytecodeClassInfoResolver(resourceLocator);
@@ -26,7 +24,11 @@ public final class MixinTaleCore {
         report.indexSummary.put("patches", index.patches().size());
     }
 
-    public byte[] transform(String internalClassName, byte[] classBytes) {
+    public byte[] transform(String name, String transformedName, byte[] classBytes) {
+        if (classBytes == null || transformedName == null || transformedName.isBlank()) {
+            return classBytes;
+        }
+        String internalClassName = transformedName.replace('.', '/');
         List<MixinTaleIndex.PatchDescriptor> candidates = index.patches().stream()
                 .filter(p -> p.targetClass().replace('.', '/').equals(internalClassName))
                 .collect(Collectors.toList());
@@ -37,7 +39,7 @@ public final class MixinTaleCore {
 
     private void registerCollisions(List<MixinTaleIndex.PatchDescriptor> candidates) {
         Map<String, List<MixinTaleIndex.PatchDescriptor>> byTarget = candidates.stream()
-                .collect(Collectors.groupingBy(c -> c.targetClass()));
+                .collect(Collectors.groupingBy(MixinTaleIndex.PatchDescriptor::targetClass));
         for (Map.Entry<String, List<MixinTaleIndex.PatchDescriptor>> entry : byTarget.entrySet()) {
             if (entry.getValue().size() <= 1) continue;
             var sorted = entry.getValue().stream().sorted(java.util.Comparator

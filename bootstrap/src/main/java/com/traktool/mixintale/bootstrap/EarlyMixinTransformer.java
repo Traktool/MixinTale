@@ -7,7 +7,7 @@ import java.nio.file.Path;
 import java.time.Instant;
 import java.util.logging.Logger;
 
-public final class EarlyMixinTransformer {
+public final class EarlyMixinTransformer implements ClassTransformer {
     private static final Logger LOGGER = Logger.getLogger(EarlyMixinTransformer.class.getName());
 
     private final MixinTaleCore core;
@@ -21,14 +21,17 @@ public final class EarlyMixinTransformer {
         Runtime.getRuntime().addShutdownHook(new Thread(this::flushReport, "mixintale-report-shutdown"));
     }
 
-    public byte[] transform(String internalClassName, byte[] classBytes) {
+    @Override
+    public byte[] transform(String name, String transformedName, byte[] bytes) {
         try {
-            return core.transform(internalClassName, classBytes);
+            return core.transform(name, transformedName, bytes);
         } catch (RuntimeException exception) {
             core.report().addError("transform", exception);
-            if (Boolean.getBoolean("mixintale.failHard")) throw exception;
-            LOGGER.warning("Transform failed for " + internalClassName + ": " + exception.getMessage());
-            return classBytes;
+            if (Boolean.getBoolean("mixintale.failHard")) {
+                throw exception;
+            }
+            LOGGER.warning("Transform failed for " + transformedName + ": " + exception.getMessage());
+            return bytes;
         }
     }
 
