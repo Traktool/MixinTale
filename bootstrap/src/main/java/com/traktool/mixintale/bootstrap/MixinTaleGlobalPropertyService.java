@@ -11,7 +11,7 @@ public final class MixinTaleGlobalPropertyService implements IGlobalPropertyServ
 
     @Override
     public IPropertyKey resolveKey(String name) {
-        return () -> name;
+        return new SimplePropertyKey(name);
     }
 
     @Override
@@ -35,5 +35,18 @@ public final class MixinTaleGlobalPropertyService implements IGlobalPropertyServ
     public String getPropertyString(IPropertyKey key, String defaultValue) {
         Object value = properties.get(key.toString());
         return value == null ? defaultValue : value.toString();
+    }
+
+    private static final class SimplePropertyKey implements IPropertyKey {
+        private final String key;
+
+        private SimplePropertyKey(String key) {
+            this.key = key;
+        }
+
+        @Override
+        public String toString() {
+            return key;
+        }
     }
 }

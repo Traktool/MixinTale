@@ -7,25 +7,40 @@ import org.spongepowered.asm.service.*;
 import org.spongepowered.asm.util.ReEntranceLock;
 
 import java.io.InputStream;
+import java.lang.reflect.Proxy;
+import java.net.URL;
 import java.util.Collection;
 
 public final class MixinTaleMixinService implements IMixinService {
-    private final IClassProvider classProvider = new IClassProvider() {
-        @Override
-        public Class<?> findClass(String name) throws ClassNotFoundException {
-            return Class.forName(name);
-        }
+    private final ReEntranceLock reEntranceLock = new ReEntranceLock(1);
 
-        @Override
-        public Class<?> findClass(String name, boolean initialize) throws ClassNotFoundException {
-            return Class.forName(name, initialize, Thread.currentThread().getContextClassLoader());
-        }
+    private final IClassProvider classProvider = (IClassProvider) Proxy.newProxyInstance(
+            IClassProvider.class.getClassLoader(),
+            new Class<?>[]{IClassProvider.class},
+            (proxy, method, args) -> {
+                String name = method.getName();
+                return switch (name) {
+                    case "findClass" -> {
+                        String className = (String) args[0];
+                        boolean initialize = args != null && args.length > 1 && args[1] instanceof Boolean b && b;
+                        yield Class.forName(className, initialize, Thread.currentThread().getContextClassLoader());
+                    }
+                    case "findAgentClass" -> {
+                        String className = (String) args[0];
+                        boolean initialize = args != null && args.length > 1 && args[1] instanceof Boolean b && b;
+                        yield Class.forName(className, initialize, Thread.currentThread().getContextClassLoader());
+                    }
+                    case "getClassPath" -> new URL[0];
+                    default -> defaultValue(method.getReturnType());
+                };
+            }
+    );
 
-        @Override
-        public Class<?> findAgentClass(String name, boolean initialize) throws ClassNotFoundException {
-            return findClass(name, initialize);
-        }
-    };
+    private final ILogger logger = (ILogger) Proxy.newProxyInstance(
+            ILogger.class.getClassLoader(),
+            new Class<?>[]{ILogger.class},
+            (proxy, method, args) -> defaultValue(method.getReturnType())
+    );
 
     @Override
     public String getName() {
@@ -38,7 +53,8 @@ public final class MixinTaleMixinService implements IMixinService {
     }
 
     @Override
-    public void prepare() {}
+    public void prepare() {
+    }
 
     @Override
     public MixinEnvironment.Phase getInitialPhase() {
@@ -46,20 +62,24 @@ public final class MixinTaleMixinService implements IMixinService {
     }
 
     @Override
-    public void offer(IMixinInternal internal) {}
+    public void offer(IMixinInternal internal) {
+    }
 
     @Override
-    public void init() {}
+    public void init() {
+    }
 
     @Override
-    public void beginPhase() {}
+    public void beginPhase() {
+    }
 
     @Override
-    public void checkEnv(Object bootSource) {}
+    public void checkEnv(Object bootSource) {
+    }
 
     @Override
     public ReEntranceLock getReEntranceLock() {
-        return new ReEntranceLock(1);
+        return reEntranceLock;
     }
 
     @Override
@@ -124,6 +144,37 @@ public final class MixinTaleMixinService implements IMixinService {
 
     @Override
     public ILogger getLogger(String name) {
-        return org.spongepowered.asm.logging.LoggerAdapterConsole.getLogger(name);
+        return logger;
+    }
+
+    private static Object defaultValue(Class<?> returnType) {
+        if (!returnType.isPrimitive()) {
+            return null;
+        }
+        if (returnType == boolean.class) {
+            return false;
+        }
+        if (returnType == byte.class) {
+            return (byte) 0;
+        }
+        if (returnType == short.class) {
+            return (short) 0;
+        }
+        if (returnType == int.class) {
+            return 0;
+        }
+        if (returnType == long.class) {
+            return 0L;
+        }
+        if (returnType == float.class) {
+            return 0f;
+        }
+        if (returnType == double.class) {
+            return 0d;
+        }
+        if (returnType == char.class) {
+            return '\0';
+        }
+        return null;
     }
 }
