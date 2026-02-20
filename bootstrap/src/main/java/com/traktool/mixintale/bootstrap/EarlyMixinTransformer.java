@@ -1,5 +1,6 @@
 package com.traktool.mixintale.bootstrap;
 
+import com.hypixel.hytale.plugin.early.ClassTransformer;
 import com.traktool.mixintale.core.reporting.MixinTaleReportWriter;
 import com.traktool.mixintale.core.weaver.MixinTaleCore;
 
