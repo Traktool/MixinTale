@@ -1,12 +1,16 @@
 package com.traktool.mixintale.bootstrap;
 
+import com.hypixel.hytale.server.core.plugin.PluginManager;
 import com.traktool.mixintale.core.locate.ResourceLocator;
 
 import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.nio.file.*;
-import java.util.*;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.Comparator;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.jar.JarFile;
 
@@ -33,7 +37,7 @@ public final class ModJarResourceLookup implements ResourceLocator {
         if (override != null && !override.isBlank()) {
             return Path.of(override);
         }
-        return Path.of("mods");
+        return PluginManager.MODS_PATH;
     }
 
     @Override
