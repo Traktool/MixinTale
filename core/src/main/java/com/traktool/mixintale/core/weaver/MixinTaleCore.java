@@ -41,13 +41,19 @@ public final class MixinTaleCore {
 
     private boolean isPatchClassLoadable(MixinTaleIndex.PatchDescriptor patch) {
         try {
-            Class.forName(patch.patchClass(), false, getClass().getClassLoader());
+            ClassLoader loader = Thread.currentThread().getContextClassLoader();
+            if (loader == null) {
+                loader = getClass().getClassLoader();
+            }
+            Class.forName(patch.patchClass(), false, loader);
             return true;
         } catch (ClassNotFoundException exception) {
             var row = new java.util.LinkedHashMap<String, Object>();
             row.put("patch", patch.patchClass());
             row.put("target", patch.targetClass());
-            row.put("reason", "Patch class is not visible from early transformer classloader");
+            ClassLoader loader = Thread.currentThread().getContextClassLoader();
+            String loaderName = loader == null ? "<null>" : loader.getClass().getName();
+            row.put("reason", "Patch class is not visible from active transforming classloader: " + loaderName);
             report.collisions.add(row);
             return false;
         }
