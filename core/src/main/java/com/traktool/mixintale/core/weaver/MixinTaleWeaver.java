@@ -18,7 +18,7 @@ public final class MixinTaleWeaver {
 
         ClassReader reader = new ClassReader(originalClass);
         ClassNode node = new ClassNode();
-        reader.accept(node, 0);
+        reader.accept(node, ClassReader.EXPAND_FRAMES);
 
         for (MixinTaleIndex.PatchDescriptor patch : candidates) {
             Map<String, Object> patchRow = new LinkedHashMap<>();
@@ -37,7 +37,7 @@ public final class MixinTaleWeaver {
             report.patches.add(patchRow);
         }
 
-        SafeClassWriter writer = new SafeClassWriter(reader, org.objectweb.asm.ClassWriter.COMPUTE_FRAMES | org.objectweb.asm.ClassWriter.COMPUTE_MAXS, resolver);
+        SafeClassWriter writer = new SafeClassWriter(reader, org.objectweb.asm.ClassWriter.COMPUTE_MAXS, resolver);
         node.accept(writer);
         return writer.toByteArray();
     }
