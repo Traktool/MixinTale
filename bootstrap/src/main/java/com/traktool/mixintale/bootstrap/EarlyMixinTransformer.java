@@ -1,16 +1,18 @@
 package com.traktool.mixintale.bootstrap;
 
+import com.hypixel.hytale.logger.HytaleLogger;
 import com.hypixel.hytale.plugin.early.ClassTransformer;
+import com.hypixel.hytale.plugin.early.EarlyPluginLoader;
 import com.traktool.mixintale.core.reporting.MixinTaleReportWriter;
 import com.traktool.mixintale.core.weaver.MixinTaleCore;
 
+import java.lang.reflect.Field;
 import java.net.URL;
+import java.net.URLClassLoader;
 import java.nio.file.Path;
 import java.time.Instant;
+import java.util.LinkedHashSet;
 import java.util.List;
-import com.hypixel.hytale.logger.HytaleLogger;
-
-import java.lang.reflect.Method;
 
 public final class EarlyMixinTransformer implements ClassTransformer {
     private static final HytaleLogger LOGGER = HytaleLogger.getLogger();
@@ -21,46 +23,31 @@ public final class EarlyMixinTransformer implements ClassTransformer {
     public EarlyMixinTransformer() {
         ModJarResourceLookup resourceLookup = new ModJarResourceLookup();
         boolean failHard = Boolean.getBoolean("mixintale.failHard");
-        ensureModJarsOnClasspath(resourceLookup.jars());
+        installModJarsIntoEarlyPluginLoader(resourceLookup.jars());
         this.core = new MixinTaleCore(resourceLookup, failHard);
         this.reportPath = Path.of("logs", "mixintale-report-" + Instant.now().toEpochMilli() + ".json");
         Runtime.getRuntime().addShutdownHook(new Thread(this::flushReport, "mixintale-report-shutdown"));
     }
 
-
-    private void ensureModJarsOnClasspath(List<String> jars) {
-        ClassLoader loader = getClass().getClassLoader();
-        Method addUrl = findAddUrl(loader);
-        if (addUrl == null) {
+    private void installModJarsIntoEarlyPluginLoader(List<String> jars) {
+        URLClassLoader baseLoader = EarlyPluginLoader.getPluginClassLoader();
+        if (baseLoader == null || jars.isEmpty()) {
             return;
         }
-        for (String jar : jars) {
-            try {
-                addUrl.invoke(loader, Path.of(jar).toUri().toURL());
-            } catch (Exception exception) {
-                LOGGER.atWarning().log("Could not add mod jar to classpath: %s (%s)", jar, exception.getMessage());
-            }
-        }
-    }
 
-    private Method findAddUrl(ClassLoader loader) {
-        Class<?> type = loader.getClass();
-        while (type != null) {
-            try {
-                Method addUrl = type.getDeclaredMethod("addURL", URL.class);
-                try {
-                    addUrl.setAccessible(true);
-                } catch (RuntimeException ignored) {
-                    // Strong encapsulation (JDK 17+) may refuse deep reflection here.
-                }
-                return addUrl;
-            } catch (NoSuchMethodException ignored) {
-                type = type.getSuperclass();
-            } catch (RuntimeException ignored) {
-                type = type.getSuperclass();
+        try {
+            LinkedHashSet<URL> merged = new LinkedHashSet<>(List.of(baseLoader.getURLs()));
+            for (String jar : jars) {
+                merged.add(Path.of(jar).toUri().toURL());
             }
+            URLClassLoader mergedLoader = new URLClassLoader(merged.toArray(URL[]::new), baseLoader.getParent());
+
+            Field pluginClassLoaderField = EarlyPluginLoader.class.getDeclaredField("pluginClassLoader");
+            pluginClassLoaderField.setAccessible(true);
+            pluginClassLoaderField.set(null, mergedLoader);
+        } catch (Exception exception) {
+            LOGGER.atWarning().log("Could not augment EarlyPluginLoader classpath: %s", exception.getMessage());
         }
-        return null;
     }
 
     @Override
