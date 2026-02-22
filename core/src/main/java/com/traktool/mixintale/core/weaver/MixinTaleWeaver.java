@@ -9,11 +9,8 @@ import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.tree.*;
 
 import java.util.*;
-import java.util.logging.Logger;
 
 public final class MixinTaleWeaver {
-    private static final Logger LOGGER = Logger.getLogger(MixinTaleWeaver.class.getName());
-
     public byte[] weave(byte[] originalClass, String className, List<MixinTaleIndex.PatchDescriptor> candidates,
                         ClassInfoResolver resolver, MixinTaleApplyReport report, boolean failHard) {
         if (candidates.isEmpty()) return originalClass;
@@ -70,7 +67,6 @@ public final class MixinTaleWeaver {
                     if (replaced < action.require()) {
                         String message = "Callsite require failed: required=" + action.require() + " replaced=" + replaced;
                         if (failHard) throw new IllegalStateException(message);
-                        LOGGER.warning(message);
                     }
                 }
                 if ("REPLACE".equals(action.kind())) {

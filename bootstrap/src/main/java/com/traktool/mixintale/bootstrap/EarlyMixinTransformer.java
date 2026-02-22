@@ -6,10 +6,10 @@ import com.traktool.mixintale.core.weaver.MixinTaleCore;
 
 import java.nio.file.Path;
 import java.time.Instant;
-import java.util.logging.Logger;
+import com.hypixel.hytale.logger.HytaleLogger;
 
 public final class EarlyMixinTransformer implements ClassTransformer {
-    private static final Logger LOGGER = Logger.getLogger(EarlyMixinTransformer.class.getName());
+    private static final HytaleLogger LOGGER = HytaleLogger.getLogger();
 
     private final MixinTaleCore core;
     private final Path reportPath;
@@ -31,7 +31,7 @@ public final class EarlyMixinTransformer implements ClassTransformer {
             if (Boolean.getBoolean("mixintale.failHard")) {
                 throw exception;
             }
-            LOGGER.warning("Transform failed for " + transformedName + ": " + exception.getMessage());
+            LOGGER.atWarning().log("Transform failed for %s: %s", transformedName, exception.getMessage());
             return bytes;
         }
     }
@@ -40,7 +40,7 @@ public final class EarlyMixinTransformer implements ClassTransformer {
         try {
             new MixinTaleReportWriter().write(reportPath, core.report());
         } catch (Exception exception) {
-            LOGGER.warning("Could not write MixinTale report: " + exception.getMessage());
+            LOGGER.atWarning().log("Could not write MixinTale report: %s", exception.getMessage());
         }
     }
 }
