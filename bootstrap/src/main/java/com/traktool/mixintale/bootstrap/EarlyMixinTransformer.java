@@ -48,9 +48,15 @@ public final class EarlyMixinTransformer implements ClassTransformer {
         while (type != null) {
             try {
                 Method addUrl = type.getDeclaredMethod("addURL", URL.class);
-                addUrl.setAccessible(true);
+                try {
+                    addUrl.setAccessible(true);
+                } catch (RuntimeException ignored) {
+                    // Strong encapsulation (JDK 17+) may refuse deep reflection here.
+                }
                 return addUrl;
             } catch (NoSuchMethodException ignored) {
+                type = type.getSuperclass();
+            } catch (RuntimeException ignored) {
                 type = type.getSuperclass();
             }
         }
