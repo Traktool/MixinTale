@@ -1,424 +1,933 @@
-# MixinTale – Harmony‑like Patching for Hytale (Java 25)
+# MixinTale — Zero-Runtime-Dependency Bytecode Patching for Hytale Mods
 
-> **MixinTale** brings a **Harmony (C#) style** patching experience to **Hytale** mods in Java:
-> **Prefix / Postfix / Replace** using **simple annotations**, with **compile‑time validation** and a **runtime weaver** that does **not leak Mixin/CallbackInfo** into game classes.
-
-This document is intended to be a **full GitHub wiki in one file**: practical, explicit, and example‑heavy.
-
----
-
-## Quick mental model (Harmony analogy)
-
-| Harmony (C#) | MixinTale (Java) | Meaning |
-|---|---|---|
-| `[HarmonyPatch]` | `@Patch` | selects the target method |
-| `Prefix(...)` | `@Prefix` | runs before original, can optionally **skip** it |
-| `Postfix(...)` | `@Postfix` | runs after original, can optionally edit result |
-| `return false` in Prefix | `return false` in `@Prefix` | **skip original** |
-| `__result = ...` | `@Result AtomicReference<R>` | set/modify return value |
-
-✅ **Yes**: in MixinTale a `@Prefix` **can cancel** (skip original) **and** set a return value (via `@Result`).  
-Your example is the intended pattern.
+> **TL;DR**: MixinTale lets mods patch Hytale server bytecode using a clean, annotation-driven API **without requiring patch classes to be loadable at runtime** (critical with isolated mod classloaders and strong encapsulation on modern Java).
+>
+> It ships as:
+> - a **tiny API** (`mixintale-api`) for patch annotations and handler parameter markers,
+> - a **compile-time annotation processor** (`mixintale-processor`) that generates an index inside your mod jar,
+> - a **runtime weaver** (`mixintale-core`) that applies patches during class loading,
+> - an **early bootstrap** jar that registers a minimal Sponge Mixin service (so the bootstrapping environment stays stable).
 
 ---
 
 ## Table of Contents
 
-1. What is MixinTale  
-2. Modules (API / Processor / Bootstrap / Doctor)  
-3. Installation (Server owners)  
-4. Installation (Mod developers)  
-5. How patching works (compile‑time → runtime)  
-6. Annotations reference  
-   - `@Patch`  
-   - `@Prefix`  
-   - `@Postfix`  
-   - `@Replace`  
-   - `@This` / `@Arg` / `@Result`  
-7. Real examples  
-8. Priority & ordering  
-9. Logging & debugging (no args required)  
-10. Doctor tool  
-11. Common mistakes & fixes  
-12. FAQ  
-13. Design notes (why ASM weaving, why no CallbackInfo)  
+1. [Why MixinTale exists](#why-mixintale-exists)  
+2. [Design constraints (the non-negotiables)](#design-constraints-the-non-negotiables)  
+3. [Core ideas](#core-ideas)  
+4. [Project layout](#project-layout)  
+5. [Quick start (for mod developers)](#quick-start-for-mod-developers)  
+6. [Patch types & semantics](#patch-types--semantics)  
+   - [@Patch](#patch)  
+   - [@Prefix](#prefix)  
+   - [@Postfix](#postfix)  
+   - [@Replace](#replace)  
+   - [@RedirectCall](#redirectcall)  
+   - [@WrapCall](#wrapcall)  
+   - [@Accessor](#accessor)  
+7. [Handler parameters: @This, @Arg, @Result, Operation](#handler-parameters-this-arg-result-operation)  
+8. [Finding method descriptors (targetDesc, call desc)](#finding-method-descriptors-targetdesc-call-desc)  
+9. [Callsite selection: owner/name/desc + ordinal + require](#callsite-selection-ownernamedesc--ordinal--require)  
+10. [Ordering rules and interaction](#ordering-rules-and-interaction)  
+11. [Failure modes, logging, and “require” guarantees](#failure-modes-logging-and-require-guarantees)  
+12. [Compatibility, security, and performance notes](#compatibility-security-and-performance-notes)  
+13. [FAQ / troubleshooting](#faq--troubleshooting)  
+14. [Authoring guidelines (best practices)](#authoring-guidelines-best-practices)  
+15. [Appendix: internal architecture (for contributors)](#appendix-internal-architecture-for-contributors)  
 
 ---
 
-## 1) What is MixinTale?
+## Why MixinTale exists
 
-MixinTale is a **method‑patching framework** for Hytale that prioritizes:
-- **Beginner DX** (same mental model as Harmony)
-- **No runtime dependency leaks** (no `CallbackInfo`, no `org.spongepowered.*` required at runtime)
-- **Deterministic, safe behavior**
-- **Java 25 compatibility**
+Hytale server modding often needs **surgical changes** in the base game code:
+- fix engine bugs,
+- change a hardcoded rule,
+- intercept a single call deep in logic,
+- add custom behavior around an existing method,
+- adjust return values and parameters precisely.
 
-### What MixinTale is NOT
-- It is not “a wrapper around `@Inject`”.
-- It does not require server owners to pass JVM flags.
-- It does not ask modders to understand Mixin internals.
+Traditional mixin approaches (e.g., Sponge Mixin style) typically assume:
+- patch classes are available at runtime,
+- mixin config files are loaded,
+- classloader topology is “flat enough” to resolve patch classes,
+- instrumentation occurs in a predictable environment.
 
----
+Modern Hytale server setups and Java versions add real constraints:
+- **mods may be isolated** in separate classloaders,
+- Java 21+ strong encapsulation can break reflective “reaching into” patch classes,
+- a TransformingClassLoader pipeline may reject bytecode referencing non-visible classes.
 
-## 2) Modules
+### MixinTale’s approach
 
-### ✅ MixinTale‑Bootstrap (Runtime / Required on servers)
-- Runs as **Hytale earlyplugin** (ClassTransformer)
-- Scans `/mods` for patch indexes
-- Applies patches using an **ASM weaver**
+MixinTale is designed around one principle:
 
-📁 Install: `/earlyplugins/MixinTale‑Runtime‑X.Y.Z.jar`
+> **Never emit bytecode that needs to reference your patch class at runtime.**
 
-### ✅ MixinTale‑API (Dev‑time only)
-- Annotation API used by mods: `@Patch`, `@Prefix`, `@Postfix`, `@Replace`, …
-
-📦 Add as Gradle dependency (**do not ship as server runtime requirement**)
-
-### ✅ MixinTale‑Processor (Dev‑time only)
-- Annotation processor
-- Validates patch signatures
-- Generates **`mixintale.index.json`** inside your mod jar
-
-### ✅ MixinTale‑Doctor (Optional tool)
-- Reads mod jars
-- Prints what patches exist, targets, conflicts, missing methods, etc.
+Instead, MixinTale **copies your handler methods into the target class** and then injects calls to *those copied methods*.  
+That means:
+- no `NoClassDefFoundError` when the target class executes code,
+- no cross-classloader runtime references,
+- patches become “self-contained” in the target class once applied.
 
 ---
 
-## 3) Installation (Server owners)
+## Design constraints (the non-negotiables)
 
-**One file. One folder. No arguments.**
+MixinTale is intentionally strict and opinionated. The following constraints are **core to its reliability**:
 
-1. Put the runtime jar here:
-   ```
-   /earlyplugins/MixinTale‑Bootstrap‑X.Y.Z.jar
-   ```
+1. **No runtime references to patch classes**  
+   Handlers from your patch class are **relocated (copied) into the target class**.  
+   This prevents runtime classloader visibility issues and is critical on Java 21+.
 
-2. Put mods here:
-   ```
-   /mods/*.jar
-   ```
+2. **Deterministic transforms**  
+   Patch application order and matching are deterministic, with stable sorting rules.
 
-That’s it.
+3. **Fail-soft by default, fail-hard when you choose**  
+   The weaver can run in a mode where patch failures are recorded (reporting) but do not crash the server,
+   or in a strict mode where any mismatch is fatal.
+
+4. **Index-driven patch discovery**  
+   MixinTale does not rely on runtime reflection scanning for annotations inside mod jars.  
+   Instead it uses a **compile-time annotation processor** to generate `mixintale.index.json` inside each mod jar.
 
 ---
 
-## 4) Installation (Mod developers)
+## Core ideas
 
-### Gradle (Kotlin DSL)
+MixinTale is based on a small set of well-defined concepts:
+
+### Patch class
+A *patch class* is a class annotated with `@Patch(targetClass = "...")`.
+
+It contains *handlers* (static methods are strongly recommended) annotated with:
+- `@Prefix`
+- `@Postfix`
+- `@Replace`
+- `@RedirectCall`
+- `@WrapCall`
+- (optionally) `@Accessor`
+
+### Action
+Each annotated handler corresponds to an **action descriptor** stored in the generated index:
+- what kind of action it is (PREFIX/POSTFIX/REPLACE/REDIRECT/WRAP),
+- which method on the target class it affects (`targetMethod`, `targetDesc`),
+- for callsite actions: which invocation is targeted (`owner`, `name`, `desc`, plus `ordinal` and `require`).
+
+### Weaver
+At runtime, MixinTale:
+1. reads the `mixintale.index.json` files from mod jars,
+2. groups actions by target class,
+3. during class loading, applies relevant actions to that target class bytecode using ASM.
+
+---
+
+## Project layout
+
+Typical published setup (recommended):
+
+- **MixinTale-Bootstrap** (early plugin jar)
+  - registers the minimal Sponge Mixin service bootstrap
+  - ensures the transformation environment starts cleanly and early
+
+- **mixintale-api** (dependency for mod dev)
+  - contains annotations and helper marker types:
+    - `@Patch`, `@Prefix`, `@Postfix`, `@Replace`, `@RedirectCall`, `@WrapCall`, `@Accessor`
+    - parameter markers `@This`, `@Arg`, `@Result`
+    - `Operation<R>` functional interface for WRAP calls
+
+- **mixintale-processor** (annotation processor)
+  - scans patch classes at compile time
+  - generates `mixintale.index.json` into your jar under `CLASS_OUTPUT`
+
+- **mixintale-core** (runtime implementation)
+  - class info resolver (hierarchy lookups for safe frame computation)
+  - resource locator for jar scanning
+  - transformer/weaver applying actions
+
+---
+
+## Quick start (for mod developers)
+
+### 1) Add dependencies
+
+You need:
+- `mixintale-api` as `compileOnly` (or `implementation` if you want, but compileOnly is typical)
+- `mixintale-processor` as `annotationProcessor`
+
+**Gradle (Kotlin DSL)**
 
 ```kotlin
 dependencies {
-    compileOnly("com.traktool:mixintale-api:VERSION")
-    annotationProcessor("com.traktool:mixintale-processor:VERSION")
+    compileOnly(files("MixinTale-API-x.x.x.jar"))
+    annotationProcessor(files("MixinTale-Processor-x.x.x.jar"))
 }
 ```
 
-**Rules:**
-- ✅ `compileOnly` + `annotationProcessor`
-- ❌ do NOT shade the processor
-- ❌ do NOT embed Sponge Mixin callback types in your patch signatures
+**Gradle (Groovy)**
 
----
-
-## 5) How patching works (explicit pipeline)
-
-### Compile‑time
-1. You write `@Patch` classes in your mod.
-2. `MixinTale‑Processor` validates them.
-3. The processor writes a file **inside your mod jar**:
-   - `mixintale.index.json`
-
-### Runtime
-1. `MixinTale‑Bootstrap` scans `/mods` and reads all `mixintale.index.json`.
-2. For each target class it loads, it **weaves bytecode**:
-   - It injects calls to your Prefix/Postfix/Replace handlers.
-   - It **copies handler bytecode into the target class** so the game never needs to load your patch framework classes.
-
-**Key guarantee:** Game classes never depend on `org.spongepowered.*` or `com.traktool.mixintale.*` at runtime.
-
----
-
-## 6) Annotations reference (ULTRA explicit)
-
-### 6.1 `@Patch`
-
-Declares a patch class targeting a specific class/method.
-
-```java
-@Patch(
-    target = ItemStack.class,
-    method = "withRestoredDurability",
-    desc   = "(D)Lcom/hypixel/hytale/server/core/inventory/ItemStack;",
-    priority = 1000
-)
-public final class ItemStackPatch { ... }
-```
-
-**Fields**
-- `target` (required): target class
-- `method` (required): method name
-- `desc` (required): JVM descriptor (avoids overload ambiguity)
-- `priority` (optional): ordering when multiple patches exist
-
-> Why `desc` is required: Hytale has overloads. Names alone are not unique. Descriptor makes patching deterministic.
-
----
-
-### 6.2 `@Prefix`  ✅ (CAN skip + CAN modify return)
-
-**Runs before the original method.**  
-Signature rules (Harmony-like):
-
-#### Option A: “Observe only” prefix
-- Return type: `void`
-- Cannot skip original
-
-```java
-@Prefix
-public static void prefix(@This ItemStack self) {
-    // do something
+```groovy
+dependencies {
+    compileOnly files("MixinTale-API-x.x.x.jar")
+    annotationProcessor files("MixinTale-Processor-x.x.x.jar")
 }
 ```
 
-#### Option B: “Harmony-like cancel” prefix (recommended)
-- Return type: `boolean`
-- Return `true` → run original  
-- Return `false` → **skip original**
-- If the target method returns non-void, you can provide `@Result AtomicReference<R>`
+### 2) Write a patch
 
 ```java
-@Prefix
-public static boolean prefix(@This ItemStack self,
-                             @Result java.util.concurrent.atomic.AtomicReference<ItemStack> result) {
-    result.set(/* replacement */);
-    return false; // skip original
-}
-```
+import com.traktool.mixintale.api.*;
 
-✅ This is the pattern you posted. It is correct, supported, and the intended DX.
+@Patch(targetClass = "com/hypixel/hytale/server/core/some/TargetClass")
+public final class ExamplePatch {
 
-**Important for non-void targets**
-- If you return `false` you MUST ensure the result is set (or accept returning null if the return type allows it).
-
----
-
-### 6.3 `@Postfix` ✅ (can edit return)
-
-Runs **after** the original method.
-
-- Return type: `void`
-- Can take `@Result AtomicReference<R>` to read/modify the result
-
-```java
-@Postfix
-public static void postfix(@Result java.util.concurrent.atomic.AtomicReference<ItemStack> result) {
-    ItemStack current = result.get();
-    result.set(current); // or modify
-}
-```
-
----
-
-### 6.4 `@Replace` ✅ (complete override)
-
-Completely replaces the method body.
-
-- Same signature as target (plus optional `@This`)
-- No original execution
-
-```java
-@Replace(method="withRestoredDurability", desc="(D)Lcom/.../ItemStack;")
-public static ItemStack replace(@This ItemStack self, double maxDurability) {
-    return new ItemStack(...);
-}
-```
-
-When to use `@Replace` vs cancel-prefix?
-- `@Replace` is clearest when you truly want a full override.
-- cancel-prefix is great when you want conditional override (sometimes run original, sometimes not).
-
----
-
-### 6.5 Parameter mapping annotations
-
-#### `@This`
-Receives the instance for non-static methods.
-
-```java
-@Prefix
-public static void prefix(@This ItemStack self) { }
-```
-
-#### `@Arg(n)`
-Receives argument *n* from the target call (0-based).
-
-```java
-@Prefix
-public static void prefix(@Arg(0) double maxDurability) { }
-```
-
-#### `@Result`
-For non-void targets, use:
-
-```java
-@Result AtomicReference<ReturnType>
-```
-
-Why `AtomicReference`?
-- It is a **java.*** type, always visible.
-- It provides a “by-ref” container like Harmony’s `ref __result`.
-
----
-
-## 7) Real example (your exact use-case)
-
-### Goal
-When repairing an item, Hytale reduces max durability.  
-We want to **ignore that penalty**.
-
-### Patch (cancel-prefix + forced return)
-
-```java
-@Patch(
-    target = ItemStack.class,
-    method = "withRestoredDurability",
-    desc   = "(D)Lcom/hypixel/hytale/server/core/inventory/ItemStack;"
-)
-public final class ItemStackPatch {
-
-    @Prefix
-    public static boolean prefix(
-            @This ItemStack self,
-            @Result java.util.concurrent.atomic.AtomicReference<ItemStack> result
-    ) {
-        double forcedMax = self.getMaxDurability();
-
-        ItemStack replaced = new ItemStack(
-                self.getItemId(),
-                self.getQuantity(),
-                forcedMax,
-                forcedMax,
-                self.getMetadata()
-        );
-
-        result.set(replaced);
-        return false; // skip original
+    @Prefix(targetMethod = "doSomething", targetDesc = "(I)Z")
+    public static void beforeDoSomething(@This Object self, @Arg(0) int value) {
+        System.out.println("Called doSomething with: " + value);
     }
 }
 ```
 
-**What happens at runtime**
-- Prefix runs
-- It sets the return value container
-- It returns false → original code is skipped
-- Target method returns `result.get()`
+### 3) Build your mod jar
+
+When compilation runs, the processor generates:
+
+- `mixintale.index.json` inside your output classes, packed into the jar.
+
+Verify it exists:
+
+```bash
+jar tf your-mod.jar | grep mixintale.index.json
+```
+
+### 4) Installation (singleplayer & server)
+
+MixinTale is a **required dependency** for any mod that ships MixinTale patches.
+
+#### Step 1 — Install MixinTale (required)
+
+1. Download the **MixinTale** JAR (the early/bootstrapping JAR provided by the project).
+2. Place it in the **EarlyPlugins** folder:
+
+   - **Singleplayer**: `[GameFolder]/UserData/EarlyPlugins`
+   - **Dedicated server**: `[ServerFolder]/EarlyPlugins`
+
+3. **Server only**: start the server with the flag that allows early plugins:
+
+```bash
+java -jar HytaleServer.jar --accept-early-plugins ...
+```
+
+> If you forget `--accept-early-plugins`, the server may ignore the EarlyPlugins folder, and MixinTale will not initialize.
+
+#### Step 2 — Install your mod (the mod that uses MixinTale)
+
+1. Download the mod JAR.
+2. Place it in the standard **Mods** folder:
+
+   - **Singleplayer**: `[GameFolder]/UserData/Mods`
+   - **Dedicated server**: `[ServerFolder]/Mods`
+
+3. Start the game/server.
+
+In most cases, no extra configuration is required unless the mod explicitly documents it.
 
 ---
 
-## 8) Priority & ordering
+## Patch types & semantics
+
+All patch handlers live in a class annotated with `@Patch`.
+
+> **Important**: internal names use slashes, not dots.  
+> `com.example.Foo` → `com/example/Foo`
+
+### @Patch
 
 ```java
-@Patch(priority = 1000)
+@Retention(CLASS)
+@Target(TYPE)
+public @interface Patch {
+    String targetClass();
+    int priority() default 1000;
+}
 ```
 
-- Higher priority runs first.
-- Deterministic across reboots.
-- If multiple cancel-prefixes return false, the highest priority one wins (because original is skipped early).
+**Example**
 
----
+```java
+import com.traktool.mixintale.api.*;
 
-## 9) Logging & debugging (optional; never required)
-
-MixinTale prints a useful boot summary by default:
-- number of mods scanned
-- number of jars with index
-- number of patches
-- number of target classes
-
-Optional flags (advanced):
-- `-Dmixintale.log.patches=true` → prints patch entries (index contents)
-- `-Dmixintale.debug.transforms=true` → logs each class actually patched
-- `-Dmixintale.debug.index=true` → logs index parsing issues
-
-**No flag is required to make it work.**
-
----
-
-## 10) Doctor tool
-
-Purpose: help server owners/modpack authors understand what will patch what.
-
-Example:
-```bash
-java -jar MixinTale-Doctor.jar mods/
+@Patch(
+    targetClass = "com/hypixel/hytale/server/core/modules/items/ItemRepairSystem",
+    priority = 1000
+)
+public final class NoRepairPenaltyPatch {
+    private NoRepairPenaltyPatch() {}
+}
 ```
 
-Outputs:
-- patch count
-- target classes
-- missing methods (bad desc)
-- conflicts (multiple patches same target)
+> The patch class can contain one or more handlers (`@Prefix`, `@Postfix`, `@Replace`, `@RedirectCall`, `@WrapCall`, etc.).
+
+
+- **targetClass**: internal name of the class to be transformed.
+- **priority**: controls ordering if multiple patches target the same class.
+  - Lower priority generally means applied earlier (depending on the runtime sorting policy).
+  - In practice: keep defaults unless you have a strong reason.
 
 ---
 
-## 11) Common mistakes & fixes
+### @Prefix
 
-### Patch not applied
-- Wrong `desc`
-- Wrong target class
-- Mod jar not in `/mods`
-- You forgot the annotation processor
+```java
+@Retention(CLASS)
+@Target(METHOD)
+public @interface Prefix {
+    String targetMethod();
+    String targetDesc();
+}
+```
 
-### “CallbackInfoReturnable not found” crash
-You used Mixin `@Inject` or referenced CallbackInfo types in signatures.
+Runs at the start of the target method.
 
-**Fix:** use `@Prefix/@Postfix/@Replace` only and remove Mixin callback types from your mod runtime.
+Typical uses:
+- logging,
+- guarding,
+- precondition modification,
+- argument normalization (if supported by the action’s parameter semantics).
 
----
+**Example**
 
-## 12) FAQ
-
-**Do I need Sponge Mixin?**  
-No. MixinTale does not require Mixin at runtime for MixinTale patches.
-
-**Can I cancel in Prefix?**  
-✅ Yes, by returning `boolean` and returning `false` to skip original.
-
-**Can I modify the return value?**  
-✅ Yes, using `@Result AtomicReference<R>` in Prefix or Postfix.
-
-**Why AtomicReference?**  
-Because it’s always available (`java.*`) and acts like Harmony’s `ref __result`.
-
----
-
-## 13) Design notes
-
-### Why not CallbackInfo?
-Because it leaks a runtime dependency on `org.spongepowered.*` into game classes, which breaks in Hytale’s classloader model.
-
-### Why ASM weaving?
-- deterministic
-- no Mixin compatibility-level headaches (Java 25)
-- no reflective dispatch in hot paths
-- no dependency leaks
+```java
+@Prefix(targetMethod = "tick", targetDesc = "()V")
+public static void beforeTick(@This Object self) {
+    // ...
+}
+```
 
 ---
 
-## Appendix: Descriptor cheatsheet
+### @Postfix
 
-- `void m()` → `()V`
-- `ItemStack m(double)` → `(D)Lcom/hypixel/hytale/server/core/inventory/ItemStack;`
-- `boolean m(int, String)` → `(ILjava/lang/String;)Z`
+```java
+@Retention(CLASS)
+@Target(METHOD)
+public @interface Postfix {
+    String targetMethod();
+    String targetDesc();
+}
+```
 
-Tip: Use your IDE decompiler or ASMifier tools, or copy from generated stubs.
+**Example (observing + overriding return value)**
+
+```java
+@Postfix(targetMethod = "computeCost", targetDesc = "(I)I")
+public static int afterComputeCost(@This Object self, @Arg(0) int baseCost, @Result int current) {
+    // current is what vanilla computed; return a new value to override it
+    return Math.max(0, current - 5);
+}
+```
+
+> If your MixinTale build treats `@Postfix` handlers as "return value capable", returning a value will replace the original return.
+> For `void` methods, use a `void` handler and omit `@Result`.
+
+
+Runs near the end of the target method.
+
+Typical uses:
+- cleanup,
+- metrics,
+- tracking final state,
+- adjusting return values (with `@Result`, see below).
 
 ---
 
-## Final note
+### @Replace
 
-MixinTale’s promise:
+```java
+@Retention(CLASS)
+@Target(METHOD)
+public @interface Replace {
+    String targetMethod();
+    String targetDesc();
+}
+```
 
-> If it compiles, it runs.  
-> If you can write Java, you can patch Hytale.
+Replaces the entire method body.
+
+Typical uses:
+- turning off a hardcoded behavior,
+- implementing an alternate algorithm,
+- hotfixing broken logic.
+
+**Example**
+
+```java
+@Replace(targetMethod = "computeDamage", targetDesc = "(I)I")
+public static int computeDamageReplacement(@This Object self, @Arg(0) int base) {
+    return Math.max(1, base / 2);
+}
+```
+
+---
+
+### @RedirectCall
+
+```java
+@Retention(CLASS)
+@Target(METHOD)
+public @interface RedirectCall {
+    String targetMethod();
+    String targetDesc();
+    String owner();
+    String name();
+    String desc();
+    int ordinal() default -1;
+    int require() default 1;
+}
+```
+
+**Example (redirect a specific callsite)**
+
+```java
+@RedirectCall(
+    targetMethod = "repairItem",
+    targetDesc   = "(Lcom/hypixel/hytale/server/core/modules/items/ItemStack;I)I",
+    owner        = "com/hypixel/hytale/server/core/modules/items/DurabilityMath",
+    name         = "applyRepairPenalty",
+    desc         = "(II)I",
+    ordinal      = 0,
+    require      = 1
+)
+public static int redirectApplyRepairPenalty(@Arg(0) int durability, @Arg(1) int repairAmount) {
+    // Completely bypass the vanilla penalty logic:
+    return durability + repairAmount;
+}
+```
+
+What this does:
+- Finds the **first** call (`ordinal = 0`) to `DurabilityMath.applyRepairPenalty(int,int)` inside `repairItem(...)`
+- Rewrites that invocation to call your handler instead.
+
+
+Targets a specific **call instruction** inside a target method and rewrites it to call your handler instead.
+
+Use when:
+- you want to replace a particular `INVOKEVIRTUAL`, `INVOKESTATIC`, `INVOKEINTERFACE`, etc,
+- you want to route a call to custom logic,
+- you can reconstruct the return value yourself.
+
+---
+
+### @WrapCall
+
+```java
+@Retention(CLASS)
+@Target(METHOD)
+public @interface WrapCall {
+    String targetMethod();
+    String targetDesc();
+    String owner();
+    String name();
+    String desc();
+    int ordinal() default -1;
+    int require() default 1;
+}
+```
+
+**Example (wrap a callsite and still call vanilla)**
+
+```java
+@WrapCall(
+    targetMethod = "repairItem",
+    targetDesc   = "(Lcom/hypixel/hytale/server/core/modules/items/ItemStack;I)I",
+    owner        = "com/hypixel/hytale/server/core/modules/items/DurabilityMath",
+    name         = "applyRepairPenalty",
+    desc         = "(II)I",
+    ordinal      = 0,
+    require      = 1
+)
+public static int wrapApplyRepairPenalty(
+        Operation<Integer> original,
+        @Arg(0) int durability,
+        @Arg(1) int repairAmount
+) throws Throwable {
+
+    // Example: reduce the penalty effect by altering arguments
+    int adjustedRepair = repairAmount * 2;
+    int vanilla = original.call(durability, adjustedRepair);
+
+    // Example: post-process the result too
+    return Math.max(vanilla, durability);
+}
+```
+
+Use WRAP when:
+- you want to keep vanilla behavior available,
+- you want pre/post logic around the original call.
+
+
+Wraps a callsite but still allows you to call the original invocation via an `Operation<R>`.
+
+Use when:
+- you want to add behavior *around* an existing call,
+- you want to modify parameters before calling original,
+- you want conditional logic that sometimes falls back to vanilla behavior.
+
+---
+
+### @Accessor
+
+```java
+@Retention(CLASS)
+@Target(METHOD)
+public @interface Accessor {
+    String value();
+}
+```
+
+**Example (field accessor pattern)**
+
+```java
+@Patch(targetClass = "com/hypixel/hytale/server/core/modules/items/ItemStack")
+public final class ItemStackAccessors {
+
+    // Access a private field (example name): "durability"
+    @Accessor("durability")
+    public static int getDurability(@This Object self) {
+        throw new AssertionError("generated/rewritten by MixinTale");
+    }
+
+    @Accessor("durability")
+    public static void setDurability(@This Object self, @Arg(0) int value) {
+        throw new AssertionError("generated/rewritten by MixinTale");
+    }
+}
+```
+
+Notes:
+- The body is never meant to run; it is a *template* for the weaver.
+- Exact capabilities depend on the MixinTale build you ship (field vs method access, getter/setter conventions, etc.).
+
+
+`@Accessor` is designed for generating access to a target field or method (implementation depends on the runtime weaver support).
+
+Common patterns:
+- access private fields safely (without reflection),
+- bridge to internal data without patching callsites.
+
+> Note: If you are using a MixinTale build where `ACCESSOR` is not yet implemented in the weaver, treat it as reserved for future/extended builds.
+
+---
+
+## Handler parameters: @This, @Arg, @Result, Operation
+
+MixinTale supports a minimal set of parameter “roles” for handlers.  
+They are encoded via parameter annotations:
+
+### @This
+
+```java
+@Retention(CLASS)
+@Target(PARAMETER)
+public @interface This {}
+```
+
+Injects the receiver (`this`) for instance contexts.
+
+- On instance methods: `@This` refers to the instance of the target class.
+- On static methods: `@This` is not meaningful (unless the action defines it in a special context).
+
+**Example (instance context)**
+
+```java
+@Prefix(targetMethod = "tick", targetDesc = "()V")
+public static void beforeTick(@This Object self) {
+    // 'self' is the instance of the target class currently executing tick()
+}
+```
+
+**Example (callsite receiver binding)**
+
+```java
+@RedirectCall(
+    targetMethod = "update",
+    targetDesc   = "()V",
+    owner        = "com/hypixel/hytale/server/core/Foo",
+    name         = "bar",
+    desc         = "(I)I",
+    ordinal      = 0,
+    require      = 1
+)
+public static int redirectBar(@This Object receiver, @Arg(0) int x) {
+    // 'receiver' is the Foo instance the original INVOKEVIRTUAL would have used
+    return x; // example
+}
+```
+
+
+### @Arg(index)
+
+```java
+@Retention(CLASS)
+@Target(PARAMETER)
+public @interface Arg {
+    int value();
+}
+```
+
+Binds a handler parameter to the Nth argument of the target method or invocation.
+
+Examples:
+- In `@Prefix/@Postfix/@Replace`: the args are the target method’s args.
+- In `@RedirectCall/@WrapCall`: the args correspond to the callsite invocation arguments (plus receiver if non-static).
+
+**Example (method arguments)**
+
+```java
+@Prefix(targetMethod = "setHealth", targetDesc = "(I)V")
+public static void clampHealth(@Arg(0) int newHealth) {
+    int clamped = Math.max(0, Math.min(100, newHealth));
+    // If your MixinTale build supports argument rewriting, you would return/assign the new value here.
+    // Otherwise, use @WrapCall/@RedirectCall around the logic that consumes the value.
+}
+```
+
+**Example (callsite arguments)**
+
+```java
+@WrapCall(
+    targetMethod = "attack",
+    targetDesc   = "(Lcom/hypixel/.../Entity;I)V",
+    owner        = "com/hypixel/.../DamageSystem",
+    name         = "applyDamage",
+    desc         = "(Lcom/hypixel/.../Entity;I)I",
+    ordinal      = 0,
+    require      = 1
+)
+public static int wrapApplyDamage(Operation<Integer> original, @Arg(0) Object target, @Arg(1) int amount) throws Throwable {
+    return original.call(target, amount + 1);
+}
+```
+
+
+### @Result
+
+```java
+@Retention(CLASS)
+@Target(PARAMETER)
+public @interface Result {}
+```
+
+Used when you need access to the current return value:
+- in `@Postfix` to observe/modify what will be returned,
+- in WRAP calls to modify the result of the original call.
+
+**Example (postfix return override)**
+
+```java
+@Postfix(targetMethod = "getDurability", targetDesc = "()I")
+public static int afterGetDurability(@This Object self, @Result int current) {
+    // 'current' is what vanilla would return.
+    // Returning a new value replaces it (when return-overrides are enabled for postfix).
+    return Math.max(1, current);
+}
+```
+
+**Example (wrap call result post-processing)**
+
+```java
+@WrapCall(
+    targetMethod = "repairItem",
+    targetDesc   = "(Lcom/hypixel/.../ItemStack;I)I",
+    owner        = "com/hypixel/.../DurabilityMath",
+    name         = "applyRepairPenalty",
+    desc         = "(II)I",
+    ordinal      = 0,
+    require      = 1
+)
+public static int wrapPenalty(Operation<Integer> original, @Arg(0) int d, @Arg(1) int a) throws Throwable {
+    int result = original.call(d, a);
+    return Math.max(result, d); // never reduce durability below original
+}
+```
+
+
+### Operation<R>
+
+```java
+@FunctionalInterface
+public interface Operation<R> {
+    R call(Object... args) throws Throwable;
+}
+```
+
+Only used for `@WrapCall`.
+
+When MixinTale wraps a callsite, it provides an `Operation<R>` you can invoke to execute the original call.
+
+**Example: WRAP callsite**
+
+```java
+@WrapCall(
+    targetMethod = "handleHit",
+    targetDesc   = "(Lcom/hypixel/.../Entity;I)V",
+    owner        = "com/hypixel/.../DamageSystem",
+    name         = "applyDamage",
+    desc         = "(Lcom/hypixel/.../Entity;I)I",
+    ordinal      = -1, // all matches
+    require      = 1
+)
+public static int wrapApplyDamage(
+        Operation<Integer> original,
+        @Arg(0) Object entity,
+        @Arg(1) int amount
+) throws Throwable {
+
+    int boosted = amount + 2;
+    int result = original.call(entity, boosted); // call original
+    return result;
+}
+```
+
+> **Note**: `Operation.call(Object... args)` is intentionally generic because callsites vary widely.  
+> Your handler is responsible for passing appropriate arguments.
+
+---
+
+## Finding method descriptors (targetDesc, call desc)
+
+MixinTale matches methods by **JVM descriptors**. These must be exact.
+
+Examples:
+- `void tick()` → `()V`
+- `int add(int a, int b)` → `(II)I`
+- `String name(UUID id)` → `(Ljava/util/UUID;)Ljava/lang/String;`
+- `void set(List<String> v)` → `(Ljava/util/List;)V`
+
+### Recommended tools
+
+- `javap -s -p -classpath <...> com.example.TargetClass`
+- ASMifier (ASM “textifier”) or IDE bytecode viewer
+- Decompiler + signature inspector (still double-check with `javap`!)
+
+### `owner` internal names
+For callsites (WRAP/REDIRECT), `owner` must be the internal name:
+- `com/example/Foo` not `com.example.Foo`
+
+### Arrays & primitives
+- `int[]` → `[I`
+- `Object[]` → `[Ljava/lang/Object;`
+
+---
+
+## Callsite selection: owner/name/desc + ordinal + require
+
+Callsite actions (`@RedirectCall`, `@WrapCall`) match a specific invocation inside a method.
+
+Matching keys:
+- `owner` (internal name)
+- `name` (invoked method name, or `<init>` for constructors)
+- `desc` (invoked method descriptor)
+
+### ordinal
+- `ordinal = -1` means “match all”.
+- `ordinal = 0` means “the first match in instruction order”.
+- `ordinal = 1` means “the second match”, etc.
+
+This is extremely useful when a method calls the same function multiple times.
+
+### require
+- minimum number of replacements expected.
+
+If fewer matches are replaced than `require`, that is treated as a failure condition:
+- in **fail-soft mode**: reported + logged, server continues (but patch may be partially applied / ineffective).
+- in **fail-hard mode**: the transformer throws and class load fails (recommended for dev and CI).
+
+---
+
+## Ordering rules and interaction
+
+For a single target method, actions are applied in a deterministic order:
+
+1. `PREFIX`
+2. `REDIRECT` / `WRAP` (callsite modifications)
+3. `POSTFIX`
+4. `REPLACE` (last)
+
+Why?
+- Prefix should run before any body modifications,
+- Redirect/Wrap must see the method body before postfix rewriting,
+- Replace invalidates prior injection points, so it is applied last.
+
+If you define both REPLACE and PREFIX/POSTFIX on the same target method:
+- REPLACE will typically override the final body, making other injections irrelevant.
+- Don’t do that unless you absolutely know what you are doing.
+
+---
+
+## Failure modes, logging, and “require” guarantees
+
+MixinTale is built to be **debuggable**, not mysterious.
+
+Common failure sources:
+- wrong target descriptor (most common),
+- wrong callsite owner/name/desc,
+- ordinal mismatch (you expected the 2nd call, but it moved),
+- changes in Hytale upstream between versions,
+- multiple mods patching the same method in incompatible ways.
+
+### The apply report
+
+A typical runtime collects an apply report with:
+- which patches were considered,
+- which actions were applied,
+- how many callsites were replaced,
+- errors and reasons.
+
+This report is invaluable for:
+- CI sanity checks against a specific server build,
+- version migration,
+- modpack compatibility debugging.
+
+---
+
+## Compatibility, security, and performance notes
+
+### Java compatibility
+MixinTale targets modern Java (at least 21) and is built with the reality of:
+- module boundaries,
+- strong encapsulation,
+- tighter classloader visibility.
+
+### Security posture
+MixinTale does not:
+- open reflective access into unrelated modules,
+- require `--add-opens` for typical operation (depending on server environment),
+- ship “god mode” reflection hooks.
+
+It performs bytecode transformation, which is powerful, but it keeps runtime dependencies minimal.
+
+### Performance
+- Index-driven discovery avoids expensive classpath scanning.
+- Patch application occurs during class loading and is typically a one-time cost per class.
+- Deterministic sorting reduces nondeterministic cache misses and “heisenbugs”.
+
+---
+
+## FAQ / troubleshooting
+
+### “My patch compiles but doesn’t apply”
+Checklist:
+1. Does your jar contain `mixintale.index.json`?
+2. Is your `@Patch.targetClass` using **slashes**?
+3. Are `targetMethod` and `targetDesc` exact?
+4. For callsites: is `owner` slash-form and is `desc` exact?
+5. Did the target method change in the server version you run?
+
+### “I get `require failed: replaced < require`”
+That means MixinTale matched fewer callsites than you required.
+Usually:
+- callsite was optimized away,
+- the method’s internal structure changed,
+- your `ordinal` is wrong,
+- owner/name/desc doesn’t match the actual invoked method.
+
+### “It crashes with `NoClassDefFoundError` pointing to my patch class”
+This should not happen if the weaver correctly relocates handler methods.
+If it does:
+- you may be using an older/modified build,
+- or the handler was not copied, and the injected bytecode references your patch class directly.
+
+In MixinTale’s intended design, injected bytecode must call a handler **owned by the target class**.
+
+---
+
+## Authoring guidelines (best practices)
+
+1. **Prefer WRAP over REDIRECT** when you want to preserve vanilla behavior.
+2. Always set **require** for callsite patches.  
+   Your patch should fail loudly when upstream changes.
+3. Avoid patching extremely hot methods unless necessary.
+4. Keep handlers small and deterministic.
+5. Do not rely on local variables unless your MixinTale build explicitly supports them.
+6. Use stable “anchor points” when possible (calls to known methods).
+7. When multiple mods patch the same class, use priorities carefully and document the intent.
+
+---
+
+## Appendix: internal architecture (for contributors)
+
+This section is for people working on MixinTale itself.
+
+### Compile-time indexing (processor)
+
+`MixinTaleProcessor` (annotation processor) scans for:
+
+- `@Patch` classes
+- annotated methods inside those patch classes
+
+It writes a JSON index to:
+
+- `CLASS_OUTPUT/mixintale.index.json`
+
+Structure (conceptual):
+
+```json
+{
+  "version": "1",
+  "generatedAt": "2026-02-21T00:00:00Z",
+  "patches": [
+    {
+      "patchClass": "com.example.ExamplePatch",
+      "targetClass": "com/hypixel/.../TargetClass",
+      "priority": 1000,
+      "actions": [
+        {
+          "kind": "PREFIX",
+          "methodName": "beforeDoSomething",
+          "methodDesc": "(Ljava/lang/Object;I)V",
+          "targetMethod": "doSomething",
+          "targetDesc": "(I)Z"
+        }
+      ]
+    }
+  ]
+}
+```
+
+Key point:
+- the processor emits method descriptors for handler methods too (`methodDesc`) so the weaver can relocate and invoke them precisely.
+
+### Runtime weaving pipeline (overview)
+
+At runtime, the weaver:
+1. parses target class bytecode to `ClassNode`,
+2. groups actions by `targetMethod + targetDesc`,
+3. for each action:
+   - loads patch class bytecode from the mod jar (ResourceLocator),
+   - **copies** the handler method into the target class (renaming if needed to avoid collisions),
+   - injects or rewrites bytecode in the target method to call the copied handler.
+
+**Why copy?**  
+Because the patch class is usually loaded from a mod classloader that the target class will not see.
+
+### Stable ordering
+
+Actions in a method are sorted by kind in this order:
+- PREFIX (0)
+- REDIRECT/WRAP (1)
+- POSTFIX (2)
+- REPLACE (3)
+
+This is done to ensure deterministic results.
+
+### Frame computation and class hierarchy safety
+
+MixinTale typically writes classes with:
+- `COMPUTE_FRAMES` and `COMPUTE_MAXS`
+
+Computing frames requires access to the class hierarchy.  
+A `ClassInfoResolver` / `SafeClassWriter` is used to resolve supertypes without causing classloading side effects.
+
+### Minimal Mixin service bootstrapping
+
+MixinTale ships a minimal `IMixinServiceBootstrap` + `IMixinService` so the environment can integrate with tooling expecting a service, without using a full mixin stack.
