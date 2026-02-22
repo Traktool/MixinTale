@@ -31,10 +31,26 @@ public final class MixinTaleCore {
         String internalClassName = transformedName.replace('.', '/');
         List<MixinTaleIndex.PatchDescriptor> candidates = index.patches().stream()
                 .filter(p -> p.targetClass().replace('.', '/').equals(internalClassName))
+                .filter(this::isPatchClassLoadable)
                 .collect(Collectors.toList());
         if (candidates.isEmpty()) return classBytes;
         registerCollisions(candidates);
         return weaver.weave(classBytes, internalClassName, candidates, resolver, report, failHard);
+    }
+
+
+    private boolean isPatchClassLoadable(MixinTaleIndex.PatchDescriptor patch) {
+        try {
+            Class.forName(patch.patchClass(), false, getClass().getClassLoader());
+            return true;
+        } catch (ClassNotFoundException exception) {
+            var row = new java.util.LinkedHashMap<String, Object>();
+            row.put("patch", patch.patchClass());
+            row.put("target", patch.targetClass());
+            row.put("reason", "Patch class is not visible from early transformer classloader");
+            report.collisions.add(row);
+            return false;
+        }
     }
 
     private void registerCollisions(List<MixinTaleIndex.PatchDescriptor> candidates) {
