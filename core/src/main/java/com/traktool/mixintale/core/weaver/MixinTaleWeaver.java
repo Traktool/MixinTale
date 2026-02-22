@@ -86,6 +86,8 @@ public final class MixinTaleWeaver {
             if (!call.owner.equals(action.owner()) || !call.name.equals(action.name()) || !call.desc.equals(action.desc())) continue;
             boolean selected = action.ordinal() < 0 || action.ordinal() == ordinal;
             if (selected) {
+                call.setOpcode(Opcodes.INVOKESTATIC);
+                call.itf = false;
                 call.owner = patch.patchClass().replace('.', '/');
                 call.name = action.methodName();
                 call.desc = action.methodDesc();
