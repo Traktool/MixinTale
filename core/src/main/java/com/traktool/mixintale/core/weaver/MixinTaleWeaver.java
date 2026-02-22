@@ -6,6 +6,7 @@ import com.traktool.mixintale.core.index.MixinTaleIndex;
 import com.traktool.mixintale.core.reporting.MixinTaleApplyReport;
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.Opcodes;
+import org.objectweb.asm.Type;
 import org.objectweb.asm.tree.*;
 
 import java.util.*;
@@ -55,7 +56,7 @@ public final class MixinTaleWeaver {
 
             for (MixinTaleIndex.ActionDescriptor action : actions) {
                 if ("REDIRECT".equals(action.kind()) || "WRAP".equals(action.kind())) {
-                    int replaced = applyCallsiteTransform(method, patch, action);
+                    int replaced = applyCallsiteTransform(method, patch, action, failHard);
                     Map<String, Object> callsite = new LinkedHashMap<>();
                     callsite.put("patch", patch.patchClass());
                     callsite.put("kind", action.kind());
@@ -78,7 +79,21 @@ public final class MixinTaleWeaver {
         }
     }
 
-    private int applyCallsiteTransform(MethodNode method, MixinTaleIndex.PatchDescriptor patch, MixinTaleIndex.ActionDescriptor action) {
+    private String expectedHandlerDescriptor(MethodInsnNode call) {
+        Type originalType = Type.getMethodType(call.desc);
+        if (call.getOpcode() == Opcodes.INVOKESTATIC) {
+            return call.desc;
+        }
+
+        Type[] originalArgs = originalType.getArgumentTypes();
+        Type[] redirectedArgs = new Type[originalArgs.length + 1];
+        redirectedArgs[0] = Type.getObjectType(call.owner);
+        System.arraycopy(originalArgs, 0, redirectedArgs, 1, originalArgs.length);
+        return Type.getMethodDescriptor(originalType.getReturnType(), redirectedArgs);
+    }
+
+    private int applyCallsiteTransform(MethodNode method, MixinTaleIndex.PatchDescriptor patch,
+                                     MixinTaleIndex.ActionDescriptor action, boolean failHard) {
         int ordinal = 0;
         int replaced = 0;
         for (AbstractInsnNode insn : method.instructions.toArray()) {
@@ -86,6 +101,15 @@ public final class MixinTaleWeaver {
             if (!call.owner.equals(action.owner()) || !call.name.equals(action.name()) || !call.desc.equals(action.desc())) continue;
             boolean selected = action.ordinal() < 0 || action.ordinal() == ordinal;
             if (selected) {
+                String expectedHandlerDesc = expectedHandlerDescriptor(call);
+                if (!expectedHandlerDesc.equals(action.methodDesc())) {
+                    if (failHard) {
+                        throw new IllegalStateException("Redirect signature mismatch for " + patch.patchClass() + "#" + action.methodName()
+                                + ": expected=" + expectedHandlerDesc + " actual=" + action.methodDesc());
+                    }
+                    ordinal++;
+                    continue;
+                }
                 call.setOpcode(Opcodes.INVOKESTATIC);
                 call.itf = false;
                 call.owner = patch.patchClass().replace('.', '/');
